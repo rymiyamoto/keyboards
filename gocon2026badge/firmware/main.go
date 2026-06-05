@@ -1,8 +1,6 @@
 package main
 
 import (
-	"embed"
-	_ "embed"
 	"image/color"
 	"machine"
 	"time"
@@ -14,9 +12,6 @@ import (
 	"tinygo.org/x/tinyfont"
 	"tinygo.org/x/tinyfont/freesans"
 )
-
-//go:embed images
-var imageDir embed.FS
 
 func main() {
 	err := run()
@@ -38,9 +33,44 @@ const (
 	black = 0x000000FF
 )
 
+var yOffsets = [...]int{
+	0,  // i = 0  (0度)
+	2,  // i = 1
+	3,  // i = 2
+	4,  // i = 3
+	6,  // i = 4  (45度)
+	7,  // i = 5
+	7,  // i = 6
+	8,  // i = 7
+	8,  // i = 8  (90度)  -> 最大値
+	8,  // i = 9
+	7,  // i = 10
+	7,  // i = 11
+	6,  // i = 12 (135度)
+	4,  // i = 13
+	3,  // i = 14
+	2,  // i = 15
+	0,  // i = 16 (180度) -> 中央
+	-2, // i = 17
+	-3, // i = 18
+	-4, // i = 19
+	-6, // i = 20 (225度)
+	-7, // i = 21
+	-7, // i = 22
+	-8, // i = 23
+	-8, // i = 24 (270度) -> 最小値
+	-8, // i = 25
+	-7, // i = 26
+	-7, // i = 27
+	-6, // i = 28 (315度)
+	-4, // i = 29
+	-3, // i = 30
+	-2, // i = 31
+}
+
 func run() error {
 	machine.SPI1.Configure(machine.SPIConfig{
-		Frequency: 20000000,
+		Frequency: 64000000,
 		Mode:      0,
 		SCK:       machine.GPIO10,
 		SDO:       machine.GPIO11,
@@ -65,11 +95,9 @@ func run() error {
 	tinyfont.WriteLine(&display, &freesans.Bold12pt7b, 00, 50, "Hello", color.RGBA{R: 255, G: 255, B: 0, A: 255})
 	tinyfont.WriteLine(&display, &freesans.Bold12pt7b, 00, 80, "Gophers!", color.RGBA{R: 255, G: 0, B: 255, A: 255})
 
-	err := initImage()
-	if err != nil {
-		return err
-	}
-	err = drawImage(display)
+	xofs := 60
+	yofs := 60
+	err := drawImage(display, xofs, yofs)
 	if err != nil {
 		return err
 	}
@@ -129,6 +157,12 @@ func run() error {
 			rotate(true)
 		case 1, 6:
 			writeColors(s, ws, ledBuffer[:])
+		case 9:
+			yofs = 60 + yOffsets[(cnt/8)%32]
+			err := drawImage(display, xofs, yofs)
+			if err != nil {
+				return err
+			}
 		}
 
 		cnt++
@@ -240,73 +274,42 @@ func UpdateMeteor(step int) [NumLEDs]uint32 {
 }
 
 var (
-	xxx = pixel.NewImage[pixel.RGB565BE](240, 240)
+	pixelBuf = pixel.NewImage[pixel.RGB565BE](240, 240)
 )
 
-func initImage() error {
+func initImage(xofs, yofs int) error {
 	{
-		b, err := imageDir.ReadFile("images/gocon2026.rgb565")
-		//b, err := imageDir.ReadFile("images/background.rgb565")
-		//b, err := imageDir.ReadFile("images/background.rgb232")
-		if err != nil {
-			return err
-		}
+		b := background565
 
 		for y := 0; y < 240; y++ {
 			for x := 0; x < 240; x++ {
 				p := uint16(b[(x+y*240)*2+1])<<8 + uint16(b[(x+y*240)*2+0])
-
-				// RGB232
-				// // rrgggbb
-				// r := (b[x+y*240] >> 5) & 0x03
-				// g := (b[x+y*240] >> 2) & 0x07
-				// b := (b[x+y*240] >> 0) & 0x03
-				// // rr000ggg000bb000
-				// //   14    9    3
-				// p := uint16(r)<<13 + uint16(g)<<9 + uint16(b)<<3
-				xxx.Set(x, y, pixel.RGB565BE(p))
+				pixelBuf.Set(x, y, pixel.RGB565BE(p))
 			}
 		}
 	}
 
-	if false {
-		b, err := imageDir.ReadFile("images/gopher.rgb565")
-		if err != nil {
-			return err
-		}
+	{
+		b := gopher565
 
 		for y := 0; y < 100; y++ {
 			for x := 0; x < 100; x++ {
 				p := (uint16(b[(x+y*100)*2+1]) << 8) + uint16(b[(x+y*100)*2+0])
-				xxx.Set(x, y, pixel.RGB565BE(p))
+				if p != 0x0000 {
+					pixelBuf.Set(x+xofs, y+yofs, pixel.RGB565BE(p))
+				}
 			}
 		}
 	}
-
-	//{
-	//	b, err := imageDir.ReadFile("images/gopher.rgb565")
-	//	if err != nil {
-	//		return err
-	//	}
-
-	//	for y := 0; y < 100; y++ {
-	//		for x := 0; x < 100; x++ {
-	//			p := (uint16(b[(x+y*100)*2+1]) << 8) + uint16(b[(x+y*100)*2+0])
-	//			xxx.Set(x, y, pixel.RGB565BE(p))
-	//		}
-	//	}
-	//}
-
 	return nil
 }
 
-func drawImage(display st7789.Device) error {
-	//display.DrawRGBBitmap8(0, 0, badgeImage, 240, 240)
+func drawImage(display st7789.Device, xofs, yofs int) error {
+	err := initImage(xofs, yofs)
+	if err != nil {
+		return err
+	}
 
-	display.DrawBitmap(0, 0, xxx)
-	//display.DrawBitmap(0, 0, xxx)
-	//time.Sleep(1 * time.Second)
-	//display.DrawBitmap(0, 0, yyy)
-
+	display.DrawBitmap(0, 0, pixelBuf)
 	return nil
 }
