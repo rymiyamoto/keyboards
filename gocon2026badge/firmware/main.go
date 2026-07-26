@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"machine"
 	"time"
@@ -155,6 +156,25 @@ func run() error {
 			//UpdateRainbowChase(cnt)
 			//UpdateMeteor(cnt)
 			rotate(true)
+		case 2:
+			for i, b := range buttons {
+				if !b.Get() {
+					label := ""
+					switch i {
+					case 0:
+						label = "A"
+					case 2:
+						label = "L"
+					case 3:
+						label = "U"
+					case 4:
+						label = "R"
+					case 5:
+						label = "D"
+					}
+					fmt.Printf("btn%s pressed\n", label)
+				}
+			}
 		case 1, 6:
 			writeColors(s, ws, ledBuffer[:])
 		case 9:
