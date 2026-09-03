@@ -15,10 +15,11 @@ const (
 	gopherHomeX = 60 // 漂うときの位置
 	gopherHomeY = 60
 
-	gopherEnterSteps = 60 // 進入にかける更新回数 (66.7ms/回 ≈ 4 秒)
-	gopherBobSteps   = 64 // 漂う時間 (yOffsets 2 周 ≈ 4.3 秒)
-	gopherExitSpeed  = 4  // 退場速度 px/回 (揺れが見えるよう控えめに ≈ 2.7 秒)
-	gopherWaitSteps  = 15 // 画面外での待機 ≈ 1 秒
+	gopherEnterSteps = 90                    // 進入にかける更新回数 (66.7ms/回 ≈ 6 秒)
+	gopherBobSteps   = 64                    // 漂う時間 (yOffsets 2 周 ≈ 4.3 秒)
+	gopherExitSteps  = 45                    // 退場にかける更新回数 ≈ 3 秒
+	gopherExitDist   = gopherHomeX + gopherW // 退場の移動距離 (画面外まで)
+	gopherWaitSteps  = 15                    // 画面外での待機 ≈ 1 秒
 )
 
 type gopherPhase int
@@ -33,8 +34,7 @@ const (
 var (
 	gopherState       = gopherEnter
 	gopherStep        = 0
-	gopherOsc         = 0 // 揺れの位相 (bob と exit で共通に進め、つなぎ目で周期を変えない)
-	gopherSlide       = 0 // exit の累積スライド量
+	gopherOsc         = 0 // 揺れの位相。出現から退場まで共通に回し続ける
 	gopherX           = 240
 	gopherY           = -gopherH
 	gopherPrevY       = -gopherH
@@ -49,53 +49,50 @@ var yOffsets = [...]int{
 	-8, -8, -7, -7, -6, -4, -3, -2,
 }
 
-// gopherSwayX は左右の揺れ (最大 ±4px)。位相は上下の揺れの 1/4 遅れで、
-// bob 開始から半周期かけて振幅を 0 → 最大へ立ち上げる
+// gopherSwayX / gopherSwayY は共通の揺れ (横 ±4px, 縦 ±8px、位相 1/4 ずれの楕円)。
+// 出現から退場まで同じ揺れを重ね続けることで、フェーズの継ぎ目を感じさせない
 func gopherSwayX() int {
-	amp := gopherOsc
-	if amp > 16 {
-		amp = 16
-	}
-	return yOffsets[(gopherOsc+8)%len(yOffsets)] * amp / 32
+	return yOffsets[(gopherOsc+8)%len(yOffsets)] / 2
 }
 
-// updateGopher はアニメーションを 1 ステップ進めて描画する
+func gopherSwayY() int {
+	return yOffsets[gopherOsc%len(yOffsets)]
+}
+
+// updateGopher はアニメーションを 1 ステップ進めて描画する。
+// 揺れは常に一定で、ベース軌道だけをイーズイン/アウトで滑らかに変える:
+// 進入は中央に向けて減速 (到着時に基準速度 0 = そのまま漂いへ)、
+// 退場は速度 0 から加速して左へ抜ける
 func updateGopher(display st7789.Device) error {
+	gopherOsc++
 	switch gopherState {
 	case gopherEnter:
-		// 右上 (240, -100) から中央へ、木の葉のように揺れながら降りてくる。
-		// 揺れは中央に近づくほど減衰し、着地点で漂い (bob) に連続する
-		remain := gopherEnterSteps - gopherStep
-		swayX := yOffsets[(gopherStep*2)%len(yOffsets)] * 2 * remain / gopherEnterSteps
-		swayY := yOffsets[(gopherStep*2+8)%len(yOffsets)] * remain / gopherEnterSteps
-		gopherX = 240 + (gopherHomeX-240)*gopherStep/gopherEnterSteps + swayX
-		gopherY = -gopherH + (gopherHomeY+gopherH)*gopherStep/gopherEnterSteps + swayY
-		if gopherStep >= gopherEnterSteps {
+		// 右上 (240, -100) から中央へイーズアウトで入る
+		n := gopherEnterSteps
+		p := gopherStep
+		if p > n {
+			p = n
+		}
+		f := 2*n*p - p*p // 0 → n² (二次イーズアウト)
+		gopherX = 240 + (gopherHomeX-240)*f/(n*n) + gopherSwayX()
+		gopherY = -gopherH + (gopherHomeY+gopherH)*f/(n*n) + gopherSwayY()
+		if gopherStep >= n {
 			gopherState = gopherBob
 			gopherStep = 0
-			gopherOsc = 0
 		}
 	case gopherBob:
-		// 上下の漂いに、位相を 1/4 ずらした左右の揺れ (±4px) を重ねて楕円軌道にする。
-		// 左右の振幅は 0 から立ち上げて進入からの座標の飛びをなくす
 		gopherX = gopherHomeX + gopherSwayX()
-		gopherY = gopherHomeY + yOffsets[gopherOsc%len(yOffsets)]
-		gopherOsc++
+		gopherY = gopherHomeY + gopherSwayY()
 		if gopherStep >= gopherBobSteps {
 			gopherState = gopherExit
 			gopherStep = 0
-			gopherSlide = 0
 		}
 	case gopherExit:
-		// 漂いと同じリズムで揺れ続けながら、0 から加速するスライドで左へ抜けていく
-		vx := gopherStep / 2
-		if vx > gopherExitSpeed {
-			vx = gopherExitSpeed
-		}
-		gopherSlide += vx
-		gopherX = gopherHomeX + gopherSwayX() - gopherSlide
-		gopherY = gopherHomeY + yOffsets[gopherOsc%len(yOffsets)]
-		gopherOsc++
+		// 中央からイーズインで加速しながら左へ抜ける
+		n := gopherExitSteps
+		p := gopherStep
+		gopherX = gopherHomeX - gopherExitDist*p*p/(n*n) + gopherSwayX()
+		gopherY = gopherHomeY + gopherSwayY()
 		if gopherX <= -gopherW {
 			gopherState = gopherWait
 			gopherStep = 0
