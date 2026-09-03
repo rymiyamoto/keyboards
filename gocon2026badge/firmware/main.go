@@ -22,6 +22,15 @@ func main() {
 	}
 }
 
+// 画面モード
+type screenMode int
+
+const (
+	screenBadge screenMode = iota
+	screenTimetable
+	screenBreakout
+)
+
 func writeColors(s pio.StateMachine, ws *piolib.WS2812B, colors []uint32) {
 	ws.WriteRaw(colors)
 }
@@ -116,21 +125,28 @@ func run() error {
 	// 偶数ティックで表示更新 (30Hz = パネルのちょうど 1/2)、奇数ティックで残りを回す
 	ticker := time.Tick(time.Second / 60)
 	cnt := 0
-	badgeMode := true   // true: バッジ画面 / false: タイムテーブル画面
-	var btnHold [6]int  // 押しっぱなしの継続ポーリング回数 (0 = 離している)
+	screen := screenBadge
+	var btnHold [6]int // 押しっぱなしの継続ポーリング回数 (0 = 離している)
 	btnLabels := [6]string{"A", "B", "R", "U", "L", "D"}
 	// U/D はこの回数 (66.7ms x 6 ≈ 400ms) 以上の長押しでオートリピート
 	const btnRepeatDelay = 6
 	ttIdle := 0 // タイムテーブル画面の無操作ティック数
+
+	// バッジ画面へ戻る
+	toBadge := func() error {
+		screen = screenBadge
+		// バッジ画面を全面復元 (gopher は続きから動く)
+		return drawImage(display)
+	}
+
 	for {
 		<-ticker
 
 		// タイムテーブル画面は無操作 1 分でバッジ画面へ戻る
-		if !badgeMode {
+		if screen == screenTimetable {
 			ttIdle++
 			if ttIdle >= 60*60 {
-				badgeMode = true
-				err := drawImage(display)
+				err := toBadge()
 				if err != nil {
 					return err
 				}
@@ -139,10 +155,13 @@ func run() error {
 
 		if cnt%2 == 0 {
 			var err error
-			if badgeMode {
+			switch screen {
+			case screenBadge:
 				err = drawMarquee(display)
-			} else {
+			case screenTimetable:
 				err = updateTimetable(display)
+			case screenBreakout:
+				err = updateBreakout(display)
 			}
 			if err != nil {
 				return err
@@ -155,7 +174,7 @@ func run() error {
 
 			odd := cnt / 2
 			if odd%2 == 0 {
-				if badgeMode {
+				if screen == screenBadge {
 					// 66.7ms 周期で gopher のアニメーションを進めて帯を再描画
 					err := updateGopher(display)
 					if err != nil {
@@ -180,47 +199,56 @@ func run() error {
 						continue
 					}
 
-					if badgeMode {
-						if i == 0 { // A: タイムテーブル画面へ
-							badgeMode = false
+					switch screen {
+					case screenBadge:
+						switch i {
+						case 0: // A: タイムテーブル画面へ
+							screen = screenTimetable
 							enterTimetable()
-						} else {
+						case 1, 3: // U (B は現行ハードに無い): ブロック崩し画面へ
+							screen = screenBreakout
+							bkInit()
+						default:
 							fmt.Printf("btn%s pressed\n", btnLabels[i])
 						}
-						continue
-					}
 
-					// タイムテーブル画面のキー操作
-					switch i {
-					case 0: // A: 詳細 <-> リスト (戻るタイル上ではバッジ画面へ)
-						if ttOnBack() {
-							badgeMode = true
-							err := drawImage(display)
-							if err != nil {
-								return err
-							}
-						} else {
-							ttSelect()
-						}
-					case 1: // B: 詳細ならリストへ、リストならバッジ画面へ
-						if ttDetail {
-							ttSelect()
-						} else {
-							badgeMode = true
-							// バッジ画面を全面復元 (gopher は続きから動く)
-							err := drawImage(display)
+					case screenBreakout:
+						if i == 0 || i == 1 || i == 3 { // A/U: バッジ画面へ
+							err := toBadge()
 							if err != nil {
 								return err
 							}
 						}
-					case 2: // R: 次のトラック
-						ttSwitchTrack(+1)
-					case 3: // U: カーソル上 / 詳細スクロール
-						ttUp()
-					case 4: // L: 前のトラック
-						ttSwitchTrack(-1)
-					case 5: // D: カーソル下 / 詳細スクロール
-						ttDown()
+
+					case screenTimetable:
+						switch i {
+						case 0: // A: 詳細 <-> リスト (戻るタイル上ではバッジ画面へ)
+							if ttOnBack() {
+								err := toBadge()
+								if err != nil {
+									return err
+								}
+							} else {
+								ttSelect()
+							}
+						case 1: // B: 詳細ならリストへ、リストならバッジ画面へ
+							if ttDetail {
+								ttSelect()
+							} else {
+								err := toBadge()
+								if err != nil {
+									return err
+								}
+							}
+						case 2: // R: 次のトラック
+							ttSwitchTrack(+1)
+						case 3: // U: カーソル上 / 詳細スクロール
+							ttUp()
+						case 4: // L: 前のトラック
+							ttSwitchTrack(-1)
+						case 5: // D: カーソル下 / 詳細スクロール
+							ttDown()
+						}
 					}
 				}
 			}
