@@ -113,14 +113,37 @@ func run() error {
 	ledBuffer[0x0F] = 0x020202FF
 
 	// パネルの自走リフレッシュ (約 60Hz) に合わせた 1/60 秒ティック。
-	// 偶数ティックでマーキー (30Hz = パネルのちょうど 1/2)、奇数ティックで残りを回す
+	// 偶数ティックで表示更新 (30Hz = パネルのちょうど 1/2)、奇数ティックで残りを回す
 	ticker := time.Tick(time.Second / 60)
 	cnt := 0
+	badgeMode := true   // true: バッジ画面 / false: タイムテーブル画面
+	var btnHold [6]int  // 押しっぱなしの継続ポーリング回数 (0 = 離している)
+	btnLabels := [6]string{"A", "B", "R", "U", "L", "D"}
+	// U/D はこの回数 (66.7ms x 6 ≈ 400ms) 以上の長押しでオートリピート
+	const btnRepeatDelay = 6
+	ttIdle := 0 // タイムテーブル画面の無操作ティック数
 	for {
 		<-ticker
 
+		// タイムテーブル画面は無操作 1 分でバッジ画面へ戻る
+		if !badgeMode {
+			ttIdle++
+			if ttIdle >= 60*60 {
+				badgeMode = true
+				err := drawImage(display)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
 		if cnt%2 == 0 {
-			err := drawMarquee(display)
+			var err error
+			if badgeMode {
+				err = drawMarquee(display)
+			} else {
+				err = updateTimetable(display)
+			}
 			if err != nil {
 				return err
 			}
@@ -132,28 +155,72 @@ func run() error {
 
 			odd := cnt / 2
 			if odd%2 == 0 {
-				// 66.7ms 周期で gopher のアニメーションを進めて帯を再描画
-				err := updateGopher(display)
-				if err != nil {
-					return err
+				if badgeMode {
+					// 66.7ms 周期で gopher のアニメーションを進めて帯を再描画
+					err := updateGopher(display)
+					if err != nil {
+						return err
+					}
 				}
 			} else {
+				// ボタンの物理対応 (実機で確認済み):
+				// 0=A, 1=B, 2=R, 3=U, 4=L, 5=D
 				for i, b := range buttons {
 					if !b.Get() {
-						label := ""
-						switch i {
-						case 0:
-							label = "A"
-						case 2:
-							label = "L"
-						case 3:
-							label = "U"
-						case 4:
-							label = "R"
-						case 5:
-							label = "D"
+						btnHold[i]++
+						ttIdle = 0
+					} else {
+						btnHold[i] = 0
+						continue
+					}
+					// 押した瞬間に 1 回、U/D は長押しでオートリピート (約 15Hz)
+					fire := btnHold[i] == 1 ||
+						((i == 3 || i == 5) && btnHold[i] >= btnRepeatDelay)
+					if !fire {
+						continue
+					}
+
+					if badgeMode {
+						if i == 0 { // A: タイムテーブル画面へ
+							badgeMode = false
+							enterTimetable()
+						} else {
+							fmt.Printf("btn%s pressed\n", btnLabels[i])
 						}
-						fmt.Printf("btn%s pressed\n", label)
+						continue
+					}
+
+					// タイムテーブル画面のキー操作
+					switch i {
+					case 0: // A: 詳細 <-> リスト (戻るタイル上ではバッジ画面へ)
+						if ttOnBack() {
+							badgeMode = true
+							err := drawImage(display)
+							if err != nil {
+								return err
+							}
+						} else {
+							ttSelect()
+						}
+					case 1: // B: 詳細ならリストへ、リストならバッジ画面へ
+						if ttDetail {
+							ttSelect()
+						} else {
+							badgeMode = true
+							// バッジ画面を全面復元 (gopher は続きから動く)
+							err := drawImage(display)
+							if err != nil {
+								return err
+							}
+						}
+					case 2: // R: 次のトラック
+						ttSwitchTrack(+1)
+					case 3: // U: カーソル上 / 詳細スクロール
+						ttUp()
+					case 4: // L: 前のトラック
+						ttSwitchTrack(-1)
+					case 5: // D: カーソル下 / 詳細スクロール
+						ttDown()
 					}
 				}
 			}
