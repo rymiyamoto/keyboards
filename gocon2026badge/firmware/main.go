@@ -104,22 +104,7 @@ func run() error {
 	}
 	writeColors(s, ws, wsLeds[:])
 
-	ledBuffer[0x00] = 0x02021FFF
-	ledBuffer[0x01] = 0x02020FFF
-	ledBuffer[0x02] = 0x020208FF
-	ledBuffer[0x03] = 0x020204FF
-	ledBuffer[0x04] = 0x020202FF
-	ledBuffer[0x05] = 0x020202FF
-	ledBuffer[0x06] = 0x020202FF
-	ledBuffer[0x07] = 0x020202FF
-	ledBuffer[0x08] = 0x1F0202FF
-	ledBuffer[0x09] = 0x0F0202FF
-	ledBuffer[0x0A] = 0x080202FF
-	ledBuffer[0x0B] = 0x040202FF
-	ledBuffer[0x0C] = 0x020202FF
-	ledBuffer[0x0D] = 0x020202FF
-	ledBuffer[0x0E] = 0x020202FF
-	ledBuffer[0x0F] = 0x020202FF
+	initBadgeLEDs()
 
 	// パネルの自走リフレッシュ (約 60Hz) に合わせた 1/60 秒ティック。
 	// 偶数ティックで表示更新 (30Hz = パネルのちょうど 1/2)、奇数ティックで残りを回す
@@ -135,6 +120,7 @@ func run() error {
 	// バッジ画面へ戻る
 	toBadge := func() error {
 		screen = screenBadge
+		initBadgeLEDs() // 他モードの LED 演出で上書きされたパターンを復元
 		// バッジ画面を全面復元 (gopher は続きから動く)
 		return drawImage(display)
 	}
@@ -167,10 +153,16 @@ func run() error {
 				return err
 			}
 		} else {
-			//UpdateRainbowChase(cnt)
-			//UpdateMeteor(cnt)
-			rotate(true)
-			writeColors(s, ws, ledBuffer[:]) // 33ms 周期 (従来 40ms)
+			// LED 演出 (33ms 周期)。モードごとに切り替える
+			switch screen {
+			case screenBadge:
+				rotate(true) // 2 色コメットの回転
+			case screenTimetable:
+				ledBreathe()
+			case screenBreakout:
+				ledRainbow()
+			}
+			writeColors(s, ws, ledBuffer[:])
 
 			odd := cnt / 2
 			if odd%2 == 0 {
