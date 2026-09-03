@@ -34,41 +34,6 @@ const (
 	black = 0x000000FF
 )
 
-var yOffsets = [...]int{
-	0,  // i = 0  (0度)
-	2,  // i = 1
-	3,  // i = 2
-	4,  // i = 3
-	6,  // i = 4  (45度)
-	7,  // i = 5
-	7,  // i = 6
-	8,  // i = 7
-	8,  // i = 8  (90度)  -> 最大値
-	8,  // i = 9
-	7,  // i = 10
-	7,  // i = 11
-	6,  // i = 12 (135度)
-	4,  // i = 13
-	3,  // i = 14
-	2,  // i = 15
-	0,  // i = 16 (180度) -> 中央
-	-2, // i = 17
-	-3, // i = 18
-	-4, // i = 19
-	-6, // i = 20 (225度)
-	-7, // i = 21
-	-7, // i = 22
-	-8, // i = 23
-	-8, // i = 24 (270度) -> 最小値
-	-8, // i = 25
-	-7, // i = 26
-	-7, // i = 27
-	-6, // i = 28 (315度)
-	-4, // i = 29
-	-3, // i = 30
-	-2, // i = 31
-}
-
 func run() error {
 	machine.SPI1.Configure(machine.SPIConfig{
 		Frequency: 64000000,
@@ -99,9 +64,7 @@ func run() error {
 	tinyfont.WriteLine(&display, &freesans.Bold12pt7b, 00, 50, "Hello", color.RGBA{R: 255, G: 255, B: 0, A: 255})
 	tinyfont.WriteLine(&display, &freesans.Bold12pt7b, 00, 80, "Gophers!", color.RGBA{R: 255, G: 0, B: 255, A: 255})
 
-	xofs := 60
-	yofs := 60
-	err := drawImage(display, xofs, yofs)
+	err := drawImage(display)
 	if err != nil {
 		return err
 	}
@@ -169,9 +132,8 @@ func run() error {
 
 			odd := cnt / 2
 			if odd%2 == 0 {
-				// 66.7ms 周期で gopher の帯だけを再描画 (従来 80ms の全画面転送)
-				yofs = 60 + yOffsets[(odd/2)%32]
-				err := drawGopher(display, xofs, yofs)
+				// 66.7ms 周期で gopher のアニメーションを進めて帯を再描画
+				err := updateGopher(display)
 				if err != nil {
 					return err
 				}
@@ -310,63 +272,23 @@ var (
 	spiBus   *dmaSPI
 )
 
-func initImage(xofs, yofs int) error {
-	{
-		b := background565
+func initImage() error {
+	raw := pixelBuf.RawBuffer()
+	copy(raw, background565)
 
-		for y := 0; y < 240; y++ {
-			for x := 0; x < 240; x++ {
-				p := uint16(b[(x+y*240)*2+1])<<8 + uint16(b[(x+y*240)*2+0])
-				pixelBuf.Set(x, y, pixel.RGB565BE(p))
-			}
-		}
-	}
-
-	overlayGopher(xofs, yofs)
+	overlayGopher(gopherX, gopherY)
 
 	// 全画面更新にもマーキーの文字を含める (帯領域は背景で上書きされているため)
 	composeMarquee()
 	return nil
 }
 
-// overlayGopher は pixelBuf へ gopher を透過合成する (0x0000 を透明色とみなす)
-func overlayGopher(xofs, yofs int) {
-	b := gopher565
-	for y := 0; y < 100; y++ {
-		for x := 0; x < 100; x++ {
-			p := (uint16(b[(x+y*100)*2+1]) << 8) + uint16(b[(x+y*100)*2+0])
-			if p != 0x0000 {
-				pixelBuf.Set(x+xofs, y+yofs, pixel.RGB565BE(p))
-			}
-		}
-	}
-}
-
-// gopher の可動域を覆う帯 (yofs 60±8 + 高さ 100 → y 52..168)
-const (
-	gopherBandY = 50
-	gopherBandH = 120
-)
-
-// drawGopher は gopher の帯領域だけを背景から再合成して転送する
-func drawGopher(display st7789.Device, xofs, yofs int) error {
-	// 前の DMA 転送が pixelBuf を読んでいる間は書き換えない
-	spiBus.Wait()
-
-	raw := pixelBuf.RawBuffer()
-	copy(raw[gopherBandY*240*2:(gopherBandY+gopherBandH)*240*2], background565[gopherBandY*240*2:])
-	overlayGopher(xofs, yofs)
-
-	band := pixel.NewImageFromBytes[pixel.RGB565BE](240, gopherBandH, raw[gopherBandY*240*2:(gopherBandY+gopherBandH)*240*2])
-	return display.DrawBitmap(0, gopherBandY, band)
-}
-
-func drawImage(display st7789.Device, xofs, yofs int) error {
+func drawImage(display st7789.Device) error {
 	// 前フレームの DMA 転送が終わる前に pixelBuf を書き換えたり
 	// DC を切り替えたりしないよう、ここで完了を待つ
 	spiBus.Wait()
 
-	err := initImage(xofs, yofs)
+	err := initImage()
 	if err != nil {
 		return err
 	}
