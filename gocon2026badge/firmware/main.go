@@ -78,10 +78,13 @@ func run() error {
 		SDI:       machine.GPIO12, // 一旦ダミーで設定する
 	})
 
-	display := st7789.New(machine.SPI1,
+	// CS はラッパーが転送単位で制御する (非同期 DMA 転送中は Low を保持する必要が
+	// あるため、ドライバには NoPin を渡す)
+	spiBus = newDMASPI(machine.SPI1, machine.GPIO13)
+	display := st7789.New(spiBus,
 		machine.GPIO15, // RESET
 		machine.GPIO14, // DC
-		machine.GPIO13, // CS
+		machine.NoPin,  // CS (GPIO13 は spiBus が管理)
 		machine.GPIO12) // BL
 
 	display.Configure(st7789.Config{
@@ -146,42 +149,51 @@ func run() error {
 	ledBuffer[0x0E] = 0x020202FF
 	ledBuffer[0x0F] = 0x020202FF
 
-	ticker := time.Tick(8 * time.Millisecond)
+	// パネルの自走リフレッシュ (約 60Hz) に合わせた 1/60 秒ティック。
+	// 偶数ティックでマーキー (30Hz = パネルのちょうど 1/2)、奇数ティックで残りを回す
+	ticker := time.Tick(time.Second / 60)
 	cnt := 0
 	for {
 		<-ticker
 
-		switch cnt % 10 {
-		case 0, 5:
+		if cnt%2 == 0 {
+			err := drawMarquee(display)
+			if err != nil {
+				return err
+			}
+		} else {
 			//UpdateRainbowChase(cnt)
 			//UpdateMeteor(cnt)
 			rotate(true)
-		case 2:
-			for i, b := range buttons {
-				if !b.Get() {
-					label := ""
-					switch i {
-					case 0:
-						label = "A"
-					case 2:
-						label = "L"
-					case 3:
-						label = "U"
-					case 4:
-						label = "R"
-					case 5:
-						label = "D"
-					}
-					fmt.Printf("btn%s pressed\n", label)
+			writeColors(s, ws, ledBuffer[:]) // 33ms 周期 (従来 40ms)
+
+			odd := cnt / 2
+			if odd%2 == 0 {
+				// 66.7ms 周期で gopher の帯だけを再描画 (従来 80ms の全画面転送)
+				yofs = 60 + yOffsets[(odd/2)%32]
+				err := drawGopher(display, xofs, yofs)
+				if err != nil {
+					return err
 				}
-			}
-		case 1, 6:
-			writeColors(s, ws, ledBuffer[:])
-		case 9:
-			yofs = 60 + yOffsets[(cnt/8)%32]
-			err := drawImage(display, xofs, yofs)
-			if err != nil {
-				return err
+			} else {
+				for i, b := range buttons {
+					if !b.Get() {
+						label := ""
+						switch i {
+						case 0:
+							label = "A"
+						case 2:
+							label = "L"
+						case 3:
+							label = "U"
+						case 4:
+							label = "R"
+						case 5:
+							label = "D"
+						}
+						fmt.Printf("btn%s pressed\n", label)
+					}
+				}
 			}
 		}
 
@@ -295,6 +307,7 @@ func UpdateMeteor(step int) [NumLEDs]uint32 {
 
 var (
 	pixelBuf = pixel.NewImage[pixel.RGB565BE](240, 240)
+	spiBus   *dmaSPI
 )
 
 func initImage(xofs, yofs int) error {
@@ -309,27 +322,56 @@ func initImage(xofs, yofs int) error {
 		}
 	}
 
-	{
-		b := gopher565
+	overlayGopher(xofs, yofs)
 
-		for y := 0; y < 100; y++ {
-			for x := 0; x < 100; x++ {
-				p := (uint16(b[(x+y*100)*2+1]) << 8) + uint16(b[(x+y*100)*2+0])
-				if p != 0x0000 {
-					pixelBuf.Set(x+xofs, y+yofs, pixel.RGB565BE(p))
-				}
-			}
-		}
-	}
+	// 全画面更新にもマーキーの文字を含める (帯領域は背景で上書きされているため)
+	composeMarquee()
 	return nil
 }
 
+// overlayGopher は pixelBuf へ gopher を透過合成する (0x0000 を透明色とみなす)
+func overlayGopher(xofs, yofs int) {
+	b := gopher565
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			p := (uint16(b[(x+y*100)*2+1]) << 8) + uint16(b[(x+y*100)*2+0])
+			if p != 0x0000 {
+				pixelBuf.Set(x+xofs, y+yofs, pixel.RGB565BE(p))
+			}
+		}
+	}
+}
+
+// gopher の可動域を覆う帯 (yofs 60±8 + 高さ 100 → y 52..168)
+const (
+	gopherBandY = 50
+	gopherBandH = 120
+)
+
+// drawGopher は gopher の帯領域だけを背景から再合成して転送する
+func drawGopher(display st7789.Device, xofs, yofs int) error {
+	// 前の DMA 転送が pixelBuf を読んでいる間は書き換えない
+	spiBus.Wait()
+
+	raw := pixelBuf.RawBuffer()
+	copy(raw[gopherBandY*240*2:(gopherBandY+gopherBandH)*240*2], background565[gopherBandY*240*2:])
+	overlayGopher(xofs, yofs)
+
+	band := pixel.NewImageFromBytes[pixel.RGB565BE](240, gopherBandH, raw[gopherBandY*240*2:(gopherBandY+gopherBandH)*240*2])
+	return display.DrawBitmap(0, gopherBandY, band)
+}
+
 func drawImage(display st7789.Device, xofs, yofs int) error {
+	// 前フレームの DMA 転送が終わる前に pixelBuf を書き換えたり
+	// DC を切り替えたりしないよう、ここで完了を待つ
+	spiBus.Wait()
+
 	err := initImage(xofs, yofs)
 	if err != nil {
 		return err
 	}
 
+	// DrawBitmap 内の最後のフレーム転送は DMA にキックして即座に戻る
 	display.DrawBitmap(0, 0, pixelBuf)
 	return nil
 }
