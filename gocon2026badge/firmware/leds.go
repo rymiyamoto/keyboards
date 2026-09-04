@@ -52,6 +52,15 @@ func ledTwinkle() {
 	}
 }
 
+// ledCyclone はサイクロン画面用。ゲームが計算したリング色をそのまま
+// (輝度 1/8 に落として) 実 LED へ出す
+func ledCyclone() {
+	for i := range ledBuffer {
+		c := cyColors[i]
+		ledBuffer[i] = toGGRRBBAA(c[1]/8, c[0]/8, c[2]/8, 0xFF)
+	}
+}
+
 // ledRainbow はブロック崩し画面用のレインボーチェイス。
 // 球の数が増えるほど回転が速くなる
 func ledRainbow() {

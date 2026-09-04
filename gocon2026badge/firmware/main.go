@@ -32,6 +32,7 @@ const (
 	screenDemo
 	screenNametag
 	screenQR
+	screenCyclone
 )
 
 func writeColors(s pio.StateMachine, ws *piolib.WS2812B, colors []uint32) {
@@ -153,6 +154,8 @@ func run() error {
 				err = updateBreakout(display)
 			case screenDemo:
 				err = updateDemo(display)
+			case screenCyclone:
+				err = updateCyclone(display)
 			}
 			if err != nil {
 				return err
@@ -170,6 +173,8 @@ func run() error {
 				ledTwinkle()
 			case screenNametag, screenQR:
 				ledBreathe()
+			case screenCyclone:
+				ledCyclone()
 			}
 			writeColors(s, ws, ledBuffer[:])
 
@@ -218,6 +223,9 @@ func run() error {
 							if err != nil {
 								return err
 							}
+						case 2: // R: サイクロンゲームへ
+							screen = screenCyclone
+							cycloneInit()
 						default:
 							fmt.Printf("btn%s pressed\n", btnLabels[i])
 						}
@@ -232,6 +240,15 @@ func run() error {
 
 					case screenDemo:
 						if i == 0 || i == 1 || i == 5 { // A/D: バッジ画面へ
+							err := toBadge()
+							if err != nil {
+								return err
+							}
+						}
+
+					case screenCyclone:
+						// A はゲーム操作。U/L (と B) でバッジ画面へ
+						if i == 1 || i == 3 || i == 4 {
 							err := toBadge()
 							if err != nil {
 								return err
