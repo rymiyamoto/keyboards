@@ -38,6 +38,20 @@ func ledBreathe() {
 	}
 }
 
+// ledTwinkle はデモ画面用。ランダムな LED がきらめいて減衰していく
+func ledTwinkle() {
+	for i := range ledBuffer {
+		v := ledBuffer[i]
+		g := uint8(v>>24) * 3 / 4
+		r := uint8(v>>16) * 3 / 4
+		b := uint8(v>>8) * 3 / 4
+		ledBuffer[i] = toGGRRBBAA(g, r, b, 0xFF)
+	}
+	if bkRnd()%3 == 0 {
+		ledBuffer[bkRnd()%NumLEDs] = toGGRRBBAA(0x14, 0x14, 0x1C, 0xFF)
+	}
+}
+
 // ledRainbow はブロック崩し画面用のレインボーチェイス。
 // 球の数が増えるほど回転が速くなる
 func ledRainbow() {

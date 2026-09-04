@@ -29,6 +29,9 @@ const (
 	screenBadge screenMode = iota
 	screenTimetable
 	screenBreakout
+	screenDemo
+	screenNametag
+	screenQR
 )
 
 func writeColors(s pio.StateMachine, ws *piolib.WS2812B, colors []uint32) {
@@ -148,6 +151,8 @@ func run() error {
 				err = updateTimetable(display)
 			case screenBreakout:
 				err = updateBreakout(display)
+			case screenDemo:
+				err = updateDemo(display)
 			}
 			if err != nil {
 				return err
@@ -161,6 +166,10 @@ func run() error {
 				ledBreathe()
 			case screenBreakout:
 				ledRainbow()
+			case screenDemo:
+				ledTwinkle()
+			case screenNametag, screenQR:
+				ledBreathe()
 			}
 			writeColors(s, ws, ledBuffer[:])
 
@@ -200,12 +209,59 @@ func run() error {
 						case 1, 3: // U (B は現行ハードに無い): ブロック崩し画面へ
 							screen = screenBreakout
 							bkInit()
+						case 5: // D: 疑似 3D デモ画面へ
+							screen = screenDemo
+							demoInit()
+						case 4: // L: 名札画面へ
+							screen = screenNametag
+							err := drawFullImage(display, nametagImg)
+							if err != nil {
+								return err
+							}
 						default:
 							fmt.Printf("btn%s pressed\n", btnLabels[i])
 						}
 
 					case screenBreakout:
 						if i == 0 || i == 1 || i == 3 { // A/U: バッジ画面へ
+							err := toBadge()
+							if err != nil {
+								return err
+							}
+						}
+
+					case screenDemo:
+						if i == 0 || i == 1 || i == 5 { // A/D: バッジ画面へ
+							err := toBadge()
+							if err != nil {
+								return err
+							}
+						}
+
+					case screenNametag:
+						switch i {
+						case 5: // D: QR コード画面へ
+							screen = screenQR
+							err := drawFullImage(display, qrcodeImg)
+							if err != nil {
+								return err
+							}
+						case 0, 1, 4: // A/L: バッジ画面へ
+							err := toBadge()
+							if err != nil {
+								return err
+							}
+						}
+
+					case screenQR:
+						switch i {
+						case 3: // U: 名札画面へ戻る
+							screen = screenNametag
+							err := drawFullImage(display, nametagImg)
+							if err != nil {
+								return err
+							}
+						case 0, 1: // A: バッジ画面へ
 							err := toBadge()
 							if err != nil {
 								return err
