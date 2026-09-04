@@ -1,6 +1,8 @@
 package main
 
 import (
+	"machine"
+
 	"tinygo.org/x/drivers/pixel"
 	"tinygo.org/x/drivers/st7789"
 )
@@ -78,7 +80,47 @@ var (
 	bkColEdge    = pixel.NewColor[pixel.RGB565BE](0x00, 0xAD, 0xD8) // 幕の縁
 )
 
-// bkInit は初期マップを作る (固定マップ)
+// 軽量な擬似乱数 (xorshift32)。初回にハードウェア乱数でシードする
+var bkRand uint32 = 0
+
+func bkRnd() uint32 {
+	if bkRand == 0 {
+		if v, err := machine.GetRNG(); err == nil && v != 0 {
+			bkRand = v
+		} else {
+			bkRand = 0x6042_2026
+		}
+	}
+	x := bkRand
+	x ^= x << 13
+	x ^= x >> 17
+	x ^= x << 5
+	bkRand = x
+	return x
+}
+
+// bkJitter は反射した球の速度成分をたまに ±1 だけ変え、
+// 毎回同じ軌道の繰り返しに見えないようにする
+func bkJitter(v *int) {
+	r := bkRnd()
+	if r&3 != 0 { // 1/4 の確率でだけ効かせる
+		return
+	}
+	d := 1
+	if r&4 != 0 {
+		d = -1
+	}
+	nv := *v + d
+	if nv > -16 && nv < 16 { // 遅くなりすぎない
+		return
+	}
+	if nv > 78 || nv < -78 { // 速くなりすぎない (1 マス跳び防止)
+		return
+	}
+	*v = nv
+}
+
+// bkInit は初期マップを作る (マップは固定、球の初速だけ乱数で揺らす)
 func bkInit() {
 	bkBlocks = 0
 	for y := 0; y < bkGrid; y++ {
@@ -134,11 +176,18 @@ func bkInit() {
 		carve(it[0], it[1], it[0]+3, it[1]+3, bkItem)
 	}
 
+	// 斜めの初速: しばらく部屋で暴れてから煙突に入り、アイテムへ。
+	// 速度と左右の向きに揺らぎを入れて毎回違う導入にする
+	vx := 55 + int(bkRnd()%10) // 55..64
+	vy := 37 + int(bkRnd()%10) // 37..46
+	if bkRnd()&1 != 0 {
+		vx = -vx
+	}
 	bkNumBall = 1
 	bkBalls[0] = bkBall{
 		x:  40*bkUnit + bkUnit/2,
 		y:  74*bkUnit + bkUnit/2,
-		vx: 59, vy: -41, // 斜め: しばらく部屋で暴れてから煙突に入り、アイテムへ
+		vx: vx, vy: -vy,
 	}
 	bkResetIn = 0
 	bkFrame = 0
@@ -165,7 +214,7 @@ func bkMultiball(cx, cy, px, py int) {
 	if target > bkMaxBalls {
 		target = bkMaxBalls
 	}
-	i := bkNumBall // 増殖のたびに方向の並びをずらす
+	i := int(bkRnd() % uint32(len(bkDirs))) // 放射方向の開始位置をランダムに
 	for bkNumBall < target {
 		d := bkDirs[i%len(bkDirs)]
 		scale := 14 + i%5 // 速度に少し個体差をつける (x14/16 〜 x18/16)
@@ -216,24 +265,41 @@ func bkStep() {
 	for i := 0; i < bkNumBall; i++ {
 		b := &bkBalls[i]
 
-		nx := b.x + b.vx
-		if nx < lo || nx > hi {
-			b.vx = -b.vx
-		} else if c := bkField[b.y/bkUnit][nx/bkUnit]; c != bkEmpty {
-			bkDestroy(nx/bkUnit, b.y/bkUnit, b.x, b.y)
-			b.vx = -b.vx
-		} else {
-			b.x = nx
+		// 1 サブステップの移動量が 1 マス (48) 未満になるよう分割し、
+		// セル境界を一度に 2 つ跨ぐ「すり抜け」を防ぐ
+		m := b.vx
+		if m < 0 {
+			m = -m
 		}
+		if v := b.vy; v > m {
+			m = v
+		} else if -v > m {
+			m = -v
+		}
+		n := m/bkUnit + 1
 
-		ny := b.y + b.vy
-		if ny < lo || ny > hi {
-			b.vy = -b.vy
-		} else if c := bkField[ny/bkUnit][b.x/bkUnit]; c != bkEmpty {
-			bkDestroy(b.x/bkUnit, ny/bkUnit, b.x, b.y)
-			b.vy = -b.vy
-		} else {
-			b.y = ny
+		for s := 0; s < n; s++ {
+			nx := b.x + b.vx/n
+			if nx < lo || nx > hi {
+				b.vx = -b.vx
+			} else if c := bkField[b.y/bkUnit][nx/bkUnit]; c != bkEmpty {
+				bkDestroy(nx/bkUnit, b.y/bkUnit, b.x, b.y)
+				b.vx = -b.vx
+				bkJitter(&b.vy)
+			} else {
+				b.x = nx
+			}
+
+			ny := b.y + b.vy/n
+			if ny < lo || ny > hi {
+				b.vy = -b.vy
+			} else if c := bkField[ny/bkUnit][b.x/bkUnit]; c != bkEmpty {
+				bkDestroy(b.x/bkUnit, ny/bkUnit, b.x, b.y)
+				b.vy = -b.vy
+				bkJitter(&b.vx)
+			} else {
+				b.y = ny
+			}
 		}
 	}
 }
